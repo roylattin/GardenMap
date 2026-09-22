@@ -20,6 +20,7 @@ import QRCode from 'qrcode';
 
 import YardMap from './src/YardMap';
 import TimeSlider from './src/TimeSlider';
+import PhotoAnalyzer from './src/PhotoAnalyzer';
 import { fetchBuildings } from './src/osm';
 import { fetchWaybackReleases } from './src/wayback';
 import {
@@ -72,6 +73,7 @@ export default function App() {
   const [imagery, setImagery] = useState([]); // [{ rel, date, url }] newest→oldest
   const [imageryIdx, setImageryIdx] = useState(0);
   const [shareOpen, setShareOpen] = useState(false);
+  const [photoOpen, setPhotoOpen] = useState(false);
   const [qrUri, setQrUri] = useState(null);
 
   useEffect(() => {
@@ -189,6 +191,15 @@ export default function App() {
     setSelectedCell(null);
   }
 
+  function usePhotoLocation(la, ln) {
+    setLat(la);
+    setLng(ln);
+    setZone(estimateZone(la));
+    setLocLabel(`${la.toFixed(4)}, ${ln.toFixed(4)}`);
+    setObstructions([]);
+    setSelectedCell(null);
+  }
+
   function inspectCell(r, c) {
     setSelectedCell({ r, c });
   }
@@ -217,6 +228,9 @@ export default function App() {
         {/* Location + zone */}
         <TouchableOpacity style={styles.locBtn} onPress={useMyLocation}>
           <Text style={styles.locBtnText}>📍 {locLabel}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.photoCta} onPress={() => setPhotoOpen(true)}>
+          <Text style={styles.photoCtaText}>📷 Analyze a photo of a spot</Text>
         </TouchableOpacity>
         <View style={styles.rowBetween}>
           <Text style={styles.zoneLabel}>Hardiness zone</Text>
@@ -431,6 +445,13 @@ export default function App() {
         </Text>
       </ScrollView>
 
+      <PhotoAnalyzer
+        visible={photoOpen}
+        onClose={() => setPhotoOpen(false)}
+        zone={zone}
+        onUseLocation={usePhotoLocation}
+      />
+
       <Modal visible={shareOpen} transparent animationType="fade" onRequestClose={() => setShareOpen(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
@@ -492,6 +513,8 @@ const styles = StyleSheet.create({
   secondaryBtnText: { color: '#dcecc7', fontWeight: '600' },
   primaryBtn: { backgroundColor: '#7cb342', paddingVertical: 10, paddingHorizontal: 14, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   primaryBtnText: { color: '#12240f', fontWeight: '700' },
+  photoCta: { backgroundColor: '#20301a', borderColor: '#3a5a34', borderWidth: 1, borderRadius: 12, padding: 12, alignItems: 'center', marginTop: 8 },
+  photoCtaText: { color: '#cfe6ad', fontWeight: '700', fontSize: 15 },
   editToggle: { backgroundColor: '#2f4a2c', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 10 },
   editToggleOn: { backgroundColor: '#f4a825' },
   editToggleText: { color: '#dcecc7', fontWeight: '700' },

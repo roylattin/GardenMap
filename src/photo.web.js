@@ -98,22 +98,33 @@ function otsuThreshold(hist, total) {
 
 // Returns { sunPct, shadePct, skyPct, lightClass, overlayUrl, width, height }.
 // Ground = pixels that aren't sky; sun/shade split via Otsu on ground luminance.
-export async function analyzeLight(file) {
-  const url = URL.createObjectURL(file);
-  try {
+// `source` may be a File/Blob or an already-drawn HTMLCanvasElement (live frame).
+export async function analyzeLight(source) {
+  let baseCanvas, revoke;
+  if (typeof HTMLCanvasElement !== 'undefined' && source instanceof HTMLCanvasElement) {
+    baseCanvas = source;
+  } else {
+    const url = URL.createObjectURL(source);
+    revoke = () => URL.revokeObjectURL(url);
     const img = await new Promise((res, rej) => {
       const im = new Image();
       im.onload = () => res(im);
       im.onerror = rej;
       im.src = url;
     });
-    const scale = Math.min(1, MAX_DIM / Math.max(img.width, img.height));
-    const w = Math.max(1, Math.round(img.width * scale));
-    const h = Math.max(1, Math.round(img.height * scale));
+    baseCanvas = document.createElement('canvas');
+    baseCanvas.width = img.width;
+    baseCanvas.height = img.height;
+    baseCanvas.getContext('2d').drawImage(img, 0, 0);
+  }
+  try {
+    const scale = Math.min(1, MAX_DIM / Math.max(baseCanvas.width, baseCanvas.height));
+    const w = Math.max(1, Math.round(baseCanvas.width * scale));
+    const h = Math.max(1, Math.round(baseCanvas.height * scale));
     const cvs = document.createElement('canvas');
     cvs.width = w; cvs.height = h;
     const ctx = cvs.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(img, 0, 0, w, h);
+    ctx.drawImage(baseCanvas, 0, 0, w, h);
     const px = ctx.getImageData(0, 0, w, h);
     const d = px.data;
 
@@ -182,7 +193,7 @@ export async function analyzeLight(file) {
       height: h,
     };
   } finally {
-    URL.revokeObjectURL(url);
+    if (revoke) revoke();
   }
 }
 
