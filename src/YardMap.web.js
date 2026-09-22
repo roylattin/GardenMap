@@ -29,6 +29,8 @@ function ClickCatcher({ onMapClick }) {
 export default function YardMap({
   size,
   center,
+  imageryUrl,
+  imageryDate,
   buildings = [],
   obstructions = [],
   mode = 'shadows',
@@ -117,7 +119,7 @@ export default function YardMap({
         scrollWheelZoom
         style={{ height: size, width: size }}
       >
-        <TileLayer url={ESRI_URL} maxNativeZoom={19} maxZoom={22} attribution={ATTRIBUTION} />
+        <TileLayer key={imageryUrl || 'esri'} url={imageryUrl || ESRI_URL} maxNativeZoom={19} maxZoom={22} attribution={ATTRIBUTION} />
         <Recenter lat={lat} lng={lng} />
         <ClickCatcher onMapClick={(la, ln) => edit && onPlace && onPlace(la, ln)} />
 

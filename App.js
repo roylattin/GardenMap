@@ -21,6 +21,7 @@ import QRCode from 'qrcode';
 import YardMap from './src/YardMap';
 import TimeSlider from './src/TimeSlider';
 import { fetchBuildings } from './src/osm';
+import { fetchWaybackReleases } from './src/wayback';
 import {
   computeSunGrid,
   classifySun,
@@ -68,6 +69,8 @@ export default function App() {
   const [obstructions, setObstructions] = useState(DEMO_OBSTRUCTIONS);
 
   const [selectedCell, setSelectedCell] = useState(null);
+  const [imagery, setImagery] = useState([]); // [{ rel, date, url }] newest→oldest
+  const [imageryIdx, setImageryIdx] = useState(0);
   const [shareOpen, setShareOpen] = useState(false);
   const [qrUri, setQrUri] = useState(null);
 
@@ -76,6 +79,27 @@ export default function App() {
       .then(setQrUri)
       .catch(() => setQrUri(null));
   }, []);
+
+  // Load Esri Wayback capture dates once; default to the newest available.
+  useEffect(() => {
+    let cancelled = false;
+    fetchWaybackReleases()
+      .then((rows) => {
+        if (!cancelled && rows && rows.length) {
+          setImagery(rows);
+          setImageryIdx(0);
+        }
+      })
+      .catch(() => {
+        /* falls back to standard Esri layer in YardMap */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const imageryUrl = imagery[imageryIdx] ? imagery[imageryIdx].url : null;
+  const imageryDate = imagery[imageryIdx] ? imagery[imageryIdx].date : null;
 
   // Auto-load nearby building footprints whenever the pin moves.
   useEffect(() => {
@@ -234,11 +258,38 @@ export default function App() {
           ))}
         </View>
 
+        {/* Imagery date (Esri Wayback) — defaults to newest capture */}
+        {imageryDate && (
+          <View style={styles.imageryRow}>
+            <Text style={styles.imageryLabel}>🛰 Imagery</Text>
+            <TouchableOpacity
+              style={styles.imageryBtn}
+              disabled={imageryIdx >= imagery.length - 1}
+              onPress={() => setImageryIdx((i) => Math.min(imagery.length - 1, i + 1))}
+            >
+              <Text style={styles.imageryBtnText}>‹ older</Text>
+            </TouchableOpacity>
+            <Text style={styles.imageryDate}>
+              {imageryDate}
+              {imageryIdx === 0 ? '  (latest)' : ''}
+            </Text>
+            <TouchableOpacity
+              style={styles.imageryBtn}
+              disabled={imageryIdx <= 0}
+              onPress={() => setImageryIdx((i) => Math.max(0, i - 1))}
+            >
+              <Text style={styles.imageryBtnText}>newer ›</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Map */}
         <View style={styles.canvasWrap}>
           <YardMap
             size={CANVAS}
             center={{ lat, lng }}
+            imageryUrl={imageryUrl}
+            imageryDate={imageryDate}
             buildings={buildings}
             obstructions={obstructions}
             mode={uiMode}
@@ -359,7 +410,7 @@ export default function App() {
         )}
 
         <Text style={styles.footer}>
-          Imagery © Esri, Maxar, Earthstar Geographics · Buildings © OpenStreetMap contributors.
+          Imagery © Esri, Maxar, Earthstar Geographics{imageryDate ? ` (captured ${imageryDate})` : ''} · Buildings © OpenStreetMap contributors.
           Shadows are modeled from building heights & sun angle — a planning aid, not a survey.
         </Text>
       </ScrollView>
@@ -440,6 +491,11 @@ const styles = StyleSheet.create({
   chipSub: { color: '#9fbb80', fontSize: 11 },
   empty: { color: '#c9a', fontStyle: 'italic' },
   footer: { color: '#7f9a63', fontSize: 11, textAlign: 'center', marginTop: 4 },
+  imageryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 4, marginBottom: 2 },
+  imageryLabel: { color: '#9fb47f', fontSize: 12, fontWeight: '600' },
+  imageryBtn: { backgroundColor: '#20301a', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
+  imageryBtnText: { color: '#cfe6ad', fontSize: 12, fontWeight: '600' },
+  imageryDate: { color: '#eaf5d9', fontSize: 12, fontWeight: '700', minWidth: 118, textAlign: 'center' },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 24 },
   modalCard: { backgroundColor: '#2a3f27', borderRadius: 16, padding: 20, width: '100%', maxWidth: 340, alignItems: 'center' },
   modalTitle: { color: '#eaf5d9', fontSize: 18, fontWeight: '800', textAlign: 'center' },
