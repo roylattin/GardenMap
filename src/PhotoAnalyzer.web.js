@@ -4,6 +4,7 @@ import { Modal } from 'react-native';
 import { analyzeLight, analyzePhoto, aspectFromHeading } from './photo.web';
 import { estimateZone, recommendPlants } from './plants';
 import { SUN_META } from './solar';
+import { computeSeasonSun, currentSeason } from './seasons';
 
 const C = {
   bg: '#0f1a0c',
@@ -24,6 +25,21 @@ function getLoc() {
       { enableHighAccuracy: true, timeout: 6000, maximumAge: 60000 }
     );
   });
+}
+
+// Blend from shade (cool slate) to full sun (gold) by lit factor 0..1.
+function cellColor(cell) {
+  if (!cell.up) return '#0c1408'; // sun below horizon
+  const t = Math.max(0, Math.min(1, cell.lit));
+  const a = [47, 74, 44], b = [244, 196, 48]; // #2f4a2c → #f4c430
+  const c = a.map((v, i) => Math.round(v + (b[i] - v) * t));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+function hourLabel(h) {
+  const ampm = h < 12 ? 'a' : 'p';
+  const hr = h % 12 === 0 ? 12 : h % 12;
+  return `${hr}${ampm}`;
 }
 
 export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation }) {
@@ -123,6 +139,7 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
     setReport({
       ...light, lat, lng, heading, tilt, aspect, zone: z,
       when: new Date(), plants: recommendPlants(light.lightClass, z), source: 'camera',
+      seasons: lat != null ? computeSeasonSun({ lat, lng, aspect: aspect ? aspect.deg : null }) : null,
     });
     setStage('report');
   }
@@ -133,15 +150,23 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
     setStage('analyzing');
     try {
       const r = await analyzePhoto(f);
-      const lat = r.exif && r.exif.lat != null ? r.exif.lat : null;
-      const lng = r.exif && r.exif.lng != null ? r.exif.lng : null;
+      let lat = r.exif && r.exif.lat != null ? r.exif.lat : null;
+      let lng = r.exif && r.exif.lng != null ? r.exif.lng : null;
+      let locApprox = false;
+      if (lat == null) {
+        const loc = await getLoc(); // photo had no GPS → use device location
+        if (loc) { lat = loc.lat; lng = loc.lng; locApprox = true; }
+      }
       const z = lat != null ? estimateZone(lat) : zone;
       setReport({
-        ...r, lat, lng,
+        ...r, lat, lng, locApprox,
         heading: r.exif ? r.exif.heading : null,
         aspect: r.exif ? r.exif.aspect : null,
         zone: z, when: r.exif ? r.exif.when : null,
         plants: recommendPlants(r.lightClass, z), source: 'upload',
+        seasons: lat != null
+          ? computeSeasonSun({ lat, lng, aspect: r.exif && r.exif.aspect ? r.exif.aspect.deg : null })
+          : null,
       });
       setStage('report');
     } catch {
@@ -152,6 +177,8 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
   }
 
   const meta = report ? SUN_META[report.lightClass] : null;
+  const nowSeason = report && report.seasons ? currentSeason(new Date(report.when || Date.now()), report.lat ?? 40) : null;
+  const hourLabels = report && report.seasons ? report.seasons.hoursFrom : 5;
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -219,7 +246,7 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
                   <p style={S.fine}>No compass heading captured — aspect unknown. Face the bed and retake, or set it on the map.</p>
                 )}
                 <div style={S.factRow}>
-                  {report.lat != null && <span style={S.fact}>📍 {report.lat.toFixed(4)}, {report.lng.toFixed(4)} · zone {report.zone}</span>}
+                  {report.lat != null && <span style={S.fact}>📍 {report.lat.toFixed(4)}, {report.lng.toFixed(4)} · zone {report.zone}{report.locApprox ? ' (approx)' : ''}</span>}
                   {report.when && <span style={S.fact}>🕐 {new Date(report.when).toLocaleString([], { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' })}</span>}
                 </div>
                 {report.lat != null && (
@@ -248,9 +275,57 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
                   (moss, leggy growth) to fine-tune advice. It’ll build on the facts captured here.
                 </p>
               )}
+
+              {report.seasons ? (
+                <>
+                  <p style={S.sectionTitle}>Sun through the year at this spot</p>
+                  <p style={S.fine}>
+                    Modeled from your latitude{report.aspect ? ` and the bed's ${report.aspect.facing}-facing aspect` : ' (open-sky estimate — no compass captured)'} using
+                    the same sun engine as the map. Assumes clear sky; nearby walls &amp; trees aren’t included here.
+                  </p>
+                  <div style={S.heat}>
+                    <div style={S.heatHead}>
+                      <span style={S.heatRowLabel} />
+                      <div style={S.heatCells}>
+                        {report.seasons.seasons[0].cells.map((c) => (
+                          <span key={c.hour} style={S.heatHour}>{c.hour % 3 === 0 ? hourLabel(c.hour) : ''}</span>
+                        ))}
+                      </div>
+                      <span style={S.heatHours}>hrs</span>
+                    </div>
+                    {report.seasons.seasons.map((s) => (
+                      <div key={s.season} style={{ ...S.heatRow, ...(s.season === nowSeason ? S.heatRowNow : null) }}>
+                        <span style={S.heatRowLabel}>{s.season === nowSeason ? '▸ ' : ''}{s.season}</span>
+                        <div style={S.heatCells}>
+                          {s.cells.map((c) => (
+                            <span key={c.hour} title={`${hourLabel(c.hour)} · ${Math.round(c.lit * 100)}% sun`}
+                              style={{ ...S.heatCell, background: cellColor(c) }} />
+                          ))}
+                        </div>
+                        <span style={{ ...S.heatHours, color: s.meta.color }}>{s.directHours}h</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={S.legend2}>
+                    <span><span style={{ ...S.dot, background: '#2f4a2c' }} /> shade</span>
+                    <span><span style={{ ...S.dot, background: '#a7d96b' }} /> partial</span>
+                    <span><span style={{ ...S.dot, background: '#f4c430' }} /> full sun</span>
+                    <span><span style={{ ...S.dot, background: '#0c1408', border: `1px solid ${C.line}` }} /> sun down</span>
+                  </div>
+                  <p style={S.fine}>
+                    Summer gives the longest days and highest sun; winter the shortest and lowest. For shadows from
+                    your actual house &amp; trees, open this spot on the map.
+                  </p>
+                </>
+              ) : (
+                <p style={S.fine}>
+                  📍 Capture or allow location to unlock the seasonal &amp; time-of-day deep-dive for this exact spot.
+                </p>
+              )}
+
               <p style={S.fine}>
-                This reads a single moment of light. For all-day sun, take shots at morning/noon/afternoon, or use
-                the map’s shadow model.
+                The photo above reads a single moment of light. The chart estimates the whole year from the sun’s
+                path — together they tell you both what’s true right now and what to expect.
               </p>
               <button style={S.primary} onClick={reset}>↺ Analyze another spot</button>
             </>
@@ -292,4 +367,15 @@ const S = {
   chip: { background: C.chip, borderRadius: 10, padding: '8px 10px' },
   chipName: { fontSize: 14, fontWeight: 600 },
   chipSub: { color: C.sub, fontSize: 11 },
+  heat: { display: 'flex', flexDirection: 'column', gap: 3, background: C.panel, borderRadius: 12, padding: 10 },
+  heatHead: { display: 'flex', alignItems: 'center', gap: 6 },
+  heatRow: { display: 'flex', alignItems: 'center', gap: 6, borderRadius: 6, padding: '2px 2px' },
+  heatRowNow: { background: '#1f331a' },
+  heatRowLabel: { width: 52, flexShrink: 0, fontSize: 12, fontWeight: 700, color: C.text },
+  heatCells: { display: 'flex', flex: 1, gap: 2 },
+  heatCell: { flex: 1, height: 16, borderRadius: 2 },
+  heatHour: { flex: 1, fontSize: 9, color: C.sub, textAlign: 'center', overflow: 'hidden' },
+  heatHours: { width: 30, flexShrink: 0, fontSize: 12, fontWeight: 700, textAlign: 'right' },
+  legend2: { display: 'flex', flexWrap: 'wrap', gap: 12, color: C.sub, fontSize: 11 },
+  dot: { display: 'inline-block', width: 10, height: 10, borderRadius: 2, marginRight: 4, verticalAlign: 'middle' },
 };

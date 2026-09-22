@@ -129,6 +129,7 @@ export async function analyzeLight(source) {
     const d = px.data;
 
     const lum = new Float32Array(w * h);
+    const warmth = new Float32Array(w * h); // R - B: warm (sunlit) vs cool (sky-lit shadow)
     const isSky = new Uint8Array(w * h);
     const hist = new Uint32Array(256);
     let groundCount = 0, skyCount = 0;
@@ -137,6 +138,7 @@ export async function analyzeLight(source) {
       const r = d[i], g = d[i + 1], b = d[i + 2];
       const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
       lum[p] = L;
+      warmth[p] = r - b;
       const y = (p / w) | 0;
       // Sky heuristic: bright + blue-dominant, biased to the upper image.
       const bright = L > 170;
@@ -151,12 +153,20 @@ export async function analyzeLight(source) {
     }
 
     const thrRaw = groundCount > 0 ? otsuThreshold(hist, groundCount) : 128;
-    const thr = Math.max(70, Math.min(200, thrRaw)); // clamp so mulch≠shadow extremes
+    const thr = Math.max(70, Math.min(200, thrRaw)); // adaptive dark/bright split
 
+    // A pixel is real SHADE only when it is BOTH darker than the split AND
+    // cool/neutral in tone — because a cast shadow is lit by blue sky, not warm
+    // sun. Dark-but-warm pixels (soil, bark mulch, deep-green leaves in sun) are
+    // just dark material in sunlight, so they count as SUN. This stops surface
+    // texture (dirt speckle, grass gaps) from being miscounted as shade.
+    const COOL = 6; // warmth below this (R-B < 6) reads as sky-lit / cool
+    const shadeMask = new Uint8Array(w * h);
     let sun = 0, shade = 0;
     for (let p = 0; p < w * h; p++) {
       if (isSky[p]) continue;
-      if (lum[p] >= thr) sun++; else shade++;
+      const isShade = lum[p] < thr && warmth[p] < COOL;
+      if (isShade) { shade++; shadeMask[p] = 1; } else sun++;
     }
     const ground = sun + shade || 1;
     const sunFrac = sun / ground;
@@ -164,7 +174,7 @@ export async function analyzeLight(source) {
     // Overlay: warm tint = sun, cool tint = shade, sky left as-is.
     for (let i = 0, p = 0; i < d.length; i += 4, p++) {
       if (isSky[p]) continue;
-      if (lum[p] >= thr) {
+      if (!shadeMask[p]) {
         d[i] = Math.min(255, d[i] * 0.7 + 255 * 0.3);
         d[i + 1] = Math.min(255, d[i + 1] * 0.7 + 205 * 0.3);
         d[i + 2] = Math.min(255, d[i + 2] * 0.7 + 40 * 0.3);
