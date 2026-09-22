@@ -5,6 +5,7 @@ import { analyzeLight, analyzePhoto, aspectFromHeading } from './photo.web';
 import { estimateZone, recommendPlants } from './plants';
 import { SUN_META } from './solar';
 import { computeSeasonSun, currentSeason } from './seasons';
+import { analyzeSpot, isSegmenterReady, isVisionSupported } from './vision';
 
 const C = {
   bg: '#0f1a0c',
@@ -50,6 +51,12 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
   const [report, setReport] = useState(null);
   const [err, setErr] = useState(null);
   const [aiNote, setAiNote] = useState(false);
+
+  // On-device AI (segmentation) state.
+  const [aiStage, setAiStage] = useState('idle'); // idle | setup | analyzing | done | error
+  const [aiProg, setAiProg] = useState({ pct: 0, loaded: 0, total: 0 });
+  const [aiResult, setAiResult] = useState(null);
+  const [aiErr, setAiErr] = useState(null);
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -105,6 +112,26 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
   function reset() {
     setStage('start'); setReport(null); setErr(null);
     setHeading(null); setTilt(null); setOrientBlocked(false); setAiNote(false);
+    setAiStage('idle'); setAiResult(null); setAiErr(null); setAiProg({ pct: 0, loaded: 0, total: 0 });
+  }
+
+  // Run the on-device segmentation model on the captured/uploaded image. Shows a
+  // one-time model-download experience the first time, then instant thereafter.
+  async function runAi() {
+    if (!report || !report.aiSrc) return;
+    setAiErr(null);
+    setAiStage(isSegmenterReady() ? 'analyzing' : 'setup');
+    try {
+      const res = await analyzeSpot(report.aiSrc, (p) => {
+        setAiProg(p);
+        if (p.status === 'analyzing' || p.status === 'ready') setAiStage('analyzing');
+      });
+      setAiResult(res);
+      setAiStage('done');
+    } catch (e) {
+      setAiErr(String((e && e.message) || e));
+      setAiStage('error');
+    }
   }
 
   async function startCamera() {
@@ -130,6 +157,7 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
     cvs.getContext('2d').drawImage(v, 0, 0);
     setStage('analyzing');
     const light = await analyzeLight(cvs);
+    const aiSrc = cvs.toDataURL('image/jpeg', 0.9);
     const loc = await getLoc();
     const lat = loc ? loc.lat : null;
     const lng = loc ? loc.lng : null;
@@ -137,7 +165,7 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
     const aspect = aspectFromHeading(heading, lat != null ? lat : 40);
     stopCamera();
     setReport({
-      ...light, lat, lng, heading, tilt, aspect, zone: z,
+      ...light, aiSrc, lat, lng, heading, tilt, aspect, zone: z,
       when: new Date(), plants: recommendPlants(light.lightClass, z), source: 'camera',
       seasons: lat != null ? computeSeasonSun({ lat, lng, aspect: aspect ? aspect.deg : null }) : null,
     });
@@ -150,6 +178,7 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
     setStage('analyzing');
     try {
       const r = await analyzePhoto(f);
+      const aiSrc = URL.createObjectURL(f);
       let lat = r.exif && r.exif.lat != null ? r.exif.lat : null;
       let lng = r.exif && r.exif.lng != null ? r.exif.lng : null;
       let locApprox = false;
@@ -159,7 +188,7 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
       }
       const z = lat != null ? estimateZone(lat) : zone;
       setReport({
-        ...r, lat, lng, locApprox,
+        ...r, aiSrc, lat, lng, locApprox,
         heading: r.exif ? r.exif.heading : null,
         aspect: r.exif ? r.exif.aspect : null,
         zone: z, when: r.exif ? r.exif.when : null,
@@ -183,6 +212,7 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <div style={S.root}>
+        <style>{AI_KEYFRAMES}</style>
         <div style={S.header}>
           <span style={S.title}>📷 Analyze a spot</span>
           <button style={S.close} onClick={onClose}>✕</button>
@@ -268,12 +298,101 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
                     ))}
               </div>
 
-              <button style={S.ai} onClick={() => setAiNote((v) => !v)}>✨ Deeper AI analysis</button>
-              {aiNote && (
-                <p style={S.fine}>
-                  Coming soon (opt-in): AI identifies your plants, spots health/pest issues, and reads shade cues
-                  (moss, leggy growth) to fine-tune advice. It’ll build on the facts captured here.
-                </p>
+              {isVisionSupported() && (
+                <div style={S.aiWrap}>
+                  {aiStage === 'idle' && (
+                    <>
+                      <button style={S.ai} onClick={runAi}>✨ Deeper AI analysis — read this scene on-device</button>
+                      <p style={S.fine}>
+                        Uses a small open-source vision model that runs <b>entirely on your device</b> — your photo is
+                        never uploaded. First run downloads it once (~15&nbsp;MB); after that it’s instant.
+                      </p>
+                    </>
+                  )}
+
+                  {(aiStage === 'setup' || aiStage === 'analyzing') && (
+                    <div style={S.aiCard}>
+                      <div style={S.aiSpark}>✨</div>
+                      <div style={S.aiTitle}>
+                        {aiStage === 'setup' ? 'Setting up on-device AI' : 'Reading the scene…'}
+                      </div>
+                      <div style={S.aiSub}>
+                        {aiStage === 'setup'
+                          ? 'One-time download — it’s then cached on this device, so next time is instant. Nothing is uploaded.'
+                          : 'Segmenting sky, canopy, structures and ground on your device.'}
+                      </div>
+                      <div style={S.barTrack}>
+                        <div
+                          style={{
+                            ...S.barFill,
+                            width: aiStage === 'analyzing' ? '100%' : `${Math.max(4, Math.round((aiProg.pct || 0) * 100))}%`,
+                            ...(aiStage === 'analyzing' ? S.barPulse : null),
+                          }}
+                        />
+                        <div style={S.barShimmer} />
+                      </div>
+                      <div style={S.aiMeta}>
+                        {aiStage === 'setup'
+                          ? aiProg.total
+                            ? `${(aiProg.loaded / 1e6).toFixed(1)} / ${(aiProg.total / 1e6).toFixed(1)} MB`
+                            : 'starting…'
+                          : 'almost there…'}
+                      </div>
+                    </div>
+                  )}
+
+                  {aiStage === 'error' && (
+                    <div style={S.aiCard}>
+                      <div style={S.aiSub}>Couldn’t run the AI here{aiErr ? ` (${aiErr})` : ''}.</div>
+                      <button style={S.secondary} onClick={runAi}>↺ Try again</button>
+                    </div>
+                  )}
+
+                  {aiStage === 'done' && aiResult && (
+                    <div style={S.aiCard}>
+                      <div style={S.aiTitle}>✨ AI scene read</div>
+                      {aiResult.lowSky ? (
+                        <p style={S.aiSub}>
+                          Barely any sky in this frame, so I can’t judge openness from it. Include the sky above the
+                          spot (tilt up) and re-shoot for a sun estimate — the composition below is still useful.
+                        </p>
+                      ) : (
+                        <div style={S.aiVerdict}>
+                          <span style={{ ...S.swatch, background: (SUN_META[aiResult.lightClass] || {}).color || '#7cb342' }} />
+                          <b>{(SUN_META[aiResult.lightClass] || {}).label || '—'}</b>
+                          <span style={S.aiOpen}>{aiResult.openness}% open sky</span>
+                        </div>
+                      )}
+                      {!aiResult.lowSky && aiResult.openness !== report.sunPct && (
+                        <p style={S.fine}>
+                          Quick read said {report.sunPct}% sun from brightness; the AI separates real sky from
+                          shadowed ground &amp; soil, so <b>{aiResult.openness}%</b> is the openness that actually
+                          drives sun here.
+                        </p>
+                      )}
+                      <div style={S.breakWrap}>
+                        {[
+                          ['☀️ Open sky', aiResult.sky, '#f4c430'],
+                          ['🌳 Canopy', aiResult.canopy, '#2e7d32'],
+                          ['🏠 Structures', aiResult.structure, '#8d6e63'],
+                          ['🟫 Ground', aiResult.ground, '#5d7a4a'],
+                        ].map(([label, pct, color]) => (
+                          <div key={label} style={S.breakRow}>
+                            <span style={S.breakLabel}>{label}</span>
+                            <div style={S.breakTrack}>
+                              <div style={{ ...S.breakFill, width: `${Math.min(100, pct)}%`, background: color }} />
+                            </div>
+                            <span style={S.breakPct}>{pct}%</span>
+                          </div>
+                        ))}
+                      </div>
+                      <p style={S.fine}>
+                        Ground (soil &amp; lawn) is excluded from the sun estimate — that’s what fixes the old skew
+                        where dark dirt read as shade. Runs 100% on your device.
+                      </p>
+                    </div>
+                  )}
+                </div>
               )}
 
               {report.seasons ? (
@@ -336,6 +455,13 @@ export default function PhotoAnalyzer({ visible, onClose, zone, onUseLocation })
   );
 }
 
+const AI_KEYFRAMES = `
+@keyframes gm-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+@keyframes gm-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+@keyframes gm-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+@keyframes gm-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+`;
+
 const S = {
   root: { display: 'flex', flexDirection: 'column', height: '100%', background: C.bg, color: C.text, fontFamily: 'system-ui, sans-serif' },
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: `1px solid ${C.line}` },
@@ -378,4 +504,38 @@ const S = {
   heatHours: { width: 30, flexShrink: 0, fontSize: 12, fontWeight: 700, textAlign: 'right' },
   legend2: { display: 'flex', flexWrap: 'wrap', gap: 12, color: C.sub, fontSize: 11 },
   dot: { display: 'inline-block', width: 10, height: 10, borderRadius: 2, marginRight: 4, verticalAlign: 'middle' },
+
+  aiWrap: { display: 'flex', flexDirection: 'column', gap: 8 },
+  aiCard: {
+    position: 'relative', background: 'linear-gradient(135deg,#241a3d 0%,#182611 100%)',
+    border: '1px solid #5a3fb0', borderRadius: 16, padding: 16,
+    display: 'flex', flexDirection: 'column', gap: 10, overflow: 'hidden',
+  },
+  aiSpark: { fontSize: 30, animation: 'gm-float 1.8s ease-in-out infinite', alignSelf: 'center' },
+  aiTitle: { fontSize: 16, fontWeight: 800, color: '#eaf5d9' },
+  aiSub: { fontSize: 13, color: '#c3b8e6', lineHeight: 1.45, margin: 0 },
+  aiMeta: { fontSize: 12, color: '#9fb47f', fontVariantNumeric: 'tabular-nums', textAlign: 'right' },
+  barTrack: {
+    position: 'relative', height: 12, borderRadius: 999, background: '#0f1a0c',
+    border: '1px solid #2f4a2c', overflow: 'hidden',
+  },
+  barFill: {
+    height: '100%', borderRadius: 999,
+    background: 'linear-gradient(90deg,#7cb342,#b452c9)',
+    transition: 'width 0.35s ease', minWidth: 8,
+  },
+  barPulse: { animation: 'gm-pulse 1.1s ease-in-out infinite' },
+  barShimmer: {
+    position: 'absolute', top: 0, left: 0, width: '40%', height: '100%',
+    background: 'linear-gradient(90deg,transparent,rgba(255,255,255,0.35),transparent)',
+    animation: 'gm-shimmer 1.4s linear infinite',
+  },
+  aiVerdict: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  aiOpen: { marginLeft: 'auto', fontSize: 13, fontWeight: 700, color: '#f4c430' },
+  breakWrap: { display: 'flex', flexDirection: 'column', gap: 6 },
+  breakRow: { display: 'flex', alignItems: 'center', gap: 8 },
+  breakLabel: { width: 96, flexShrink: 0, fontSize: 12, color: '#eaf5d9' },
+  breakTrack: { flex: 1, height: 10, borderRadius: 999, background: '#0f1a0c', overflow: 'hidden' },
+  breakFill: { height: '100%', borderRadius: 999, transformOrigin: 'left', animation: 'gm-grow 0.5s ease' },
+  breakPct: { width: 34, flexShrink: 0, textAlign: 'right', fontSize: 12, fontWeight: 700, color: '#cfe3b4', fontVariantNumeric: 'tabular-nums' },
 };

@@ -22,6 +22,7 @@ import YardMap from './src/YardMap';
 import TimeSlider from './src/TimeSlider';
 import PhotoAnalyzer from './src/PhotoAnalyzer';
 import { fetchBuildings } from './src/osm';
+import { detectCanopyTrees, isSegmenterReady, isVisionSupported } from './src/vision';
 import { fetchWaybackReleases } from './src/wayback';
 import {
   computeSunGrid,
@@ -111,6 +112,10 @@ export default function App() {
   const [obstructions, setObstructions] = useState(loadJSON('gm_obs', savedLoc ? [] : DEMO_OBSTRUCTIONS));
   const [autoTrees, setAutoTrees] = useState([]); // trees auto-detected from OpenStreetMap
   const [autoTreesOn, setAutoTreesOn] = useState(true);
+  const [aiTrees, setAiTrees] = useState([]); // trees detected by on-device AI from the satellite tile
+  const [aiStage, setAiStage] = useState('idle'); // idle | setup | analyzing | done | error
+  const [aiProg, setAiProg] = useState({ pct: 0, loaded: 0, total: 0 });
+  const [aiErr, setAiErr] = useState(null);
 
   const [selectedCell, setSelectedCell] = useState(null);
   const [imagery, setImagery] = useState([]); // [{ rel, date, url }] newest→oldest
@@ -123,6 +128,39 @@ export default function App() {
     QRCode.toDataURL(shareUrl(), { width: 220, margin: 1 })
       .then(setQrUri)
       .catch(() => setQrUri(null));
+  }, []);
+
+  // First-time visitors: center on their real yard instead of the demo.
+  // Returning visitors (savedLoc) keep the yard they were last on. Denial or
+  // failure silently leaves the demo yard in place — no scary alert on launch.
+  useEffect(() => {
+    if (savedLoc) return; // respect a previously chosen/saved location
+    let cancelled = false;
+    setLocLabel('📍 Finding your yard…');
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          if (!cancelled) setLocLabel('Demo yard — tap 📍 for yours');
+          return;
+        }
+        const loc = await Location.getCurrentPositionAsync({});
+        if (cancelled) return;
+        const la = loc.coords.latitude;
+        const ln = loc.coords.longitude;
+        setLat(la);
+        setLng(ln);
+        setZone(estimateZone(la));
+        setLocLabel(`${la.toFixed(4)}, ${ln.toFixed(4)}`);
+        setObstructions([]); // clear demo house/trees — this is a real place now
+        setSelectedCell(null);
+      } catch (e) {
+        if (!cancelled) setLocLabel('Demo yard — tap 📍 for yours');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Load Esri Wayback capture dates once; default to the newest available.
@@ -166,6 +204,8 @@ export default function App() {
     if (movedM < 25) return; // still analyzing essentially the same footprints
     lastFetch.current = { lat, lng };
     let cancelled = false;
+    setAiTrees([]); // AI canopy is tied to the previous tile — clear on move
+    setAiStage('idle');
 
     const key = osmKey(lat, lng);
     const cached = loadJSON(key, null);
@@ -207,10 +247,11 @@ export default function App() {
     };
   }, [lat, lng]);
 
-  // Everything that casts shade: user-placed items + auto-detected OSM trees.
+  // Everything that casts shade: user-placed items + auto-detected OSM trees +
+  // AI-detected canopy from the satellite tile.
   const effObstructions = useMemo(
-    () => (autoTreesOn ? [...obstructions, ...autoTrees] : obstructions),
-    [obstructions, autoTrees, autoTreesOn]
+    () => [...obstructions, ...(autoTreesOn ? autoTrees : []), ...aiTrees],
+    [obstructions, autoTrees, autoTreesOn, aiTrees]
   );
 
   // Is the pin sitting on a modeled structure (OSM building or a placed
@@ -292,6 +333,24 @@ export default function App() {
   function addHouseAtCenter() {
     setObstructions((prev) => [...prev, { type: 'structure', lat, lng, height: 6, radius: 6 }]);
     setSelectedCell(null);
+  }
+
+  // Scan the yard's satellite tile with the on-device AI model and add any tree
+  // canopy it finds. First run downloads the model once (progress shown).
+  async function scanForTrees() {
+    setAiErr(null);
+    setAiStage(isSegmenterReady() ? 'analyzing' : 'setup');
+    try {
+      const trees = await detectCanopyTrees(lat, lng, SIZE_M, (p) => {
+        setAiProg(p);
+        if (p.status === 'analyzing' || p.status === 'ready') setAiStage('analyzing');
+      });
+      setAiTrees(trees);
+      setAiStage('done');
+    } catch (e) {
+      setAiErr(String((e && e.message) || e));
+      setAiStage('error');
+    }
   }
 
   function usePhotoLocation(la, ln) {
@@ -530,6 +589,74 @@ export default function App() {
                     : 'none mapped here — add with ✏️'}
                 </Text>
               </View>
+
+              {isVisionSupported() && (
+                <View style={styles.aiBox}>
+                  {aiStage === 'idle' && (
+                    <>
+                      <TouchableOpacity style={styles.aiBtn} onPress={scanForTrees}>
+                        <Text style={styles.aiBtnText}>✨ AI: scan satellite for trees</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.aiFine}>
+                        Finds tree canopy OpenStreetMap misses, right from the aerial image — runs on your device.
+                        First run downloads a small model (~15 MB) once, then it's instant.
+                      </Text>
+                    </>
+                  )}
+                  {(aiStage === 'setup' || aiStage === 'analyzing') && (
+                    <View style={styles.aiCard}>
+                      <Text style={styles.aiTitle}>
+                        {aiStage === 'setup' ? '✨ Setting up on-device AI' : '✨ Scanning the satellite tile…'}
+                      </Text>
+                      <Text style={styles.aiFine}>
+                        {aiStage === 'setup'
+                          ? "One-time download — cached on this device afterwards, so it's instant next time. Nothing is uploaded."
+                          : 'Finding tree canopy in the aerial image on your device.'}
+                      </Text>
+                      <View style={styles.aiTrack}>
+                        <View
+                          style={[
+                            styles.aiFill,
+                            { width: `${aiStage === 'analyzing' ? 100 : Math.max(4, Math.round((aiProg.pct || 0) * 100))}%` },
+                          ]}
+                        />
+                      </View>
+                      <Text style={styles.aiMeta}>
+                        {aiStage === 'setup'
+                          ? aiProg.total
+                            ? `${(aiProg.loaded / 1e6).toFixed(1)} / ${(aiProg.total / 1e6).toFixed(1)} MB`
+                            : 'starting…'
+                          : 'almost there…'}
+                      </Text>
+                    </View>
+                  )}
+                  {aiStage === 'done' && (
+                    <View style={styles.aiCard}>
+                      <Text style={styles.aiTitle}>
+                        {aiTrees.length > 0
+                          ? `✨ AI added ${aiTrees.length} tree${aiTrees.length === 1 ? '' : 's'}`
+                          : '✨ No extra canopy found'}
+                      </Text>
+                      <Text style={styles.aiFine}>
+                        {aiTrees.length > 0
+                          ? 'Dappled shade from these is now in the plant zones. Not right? Tap ✏️ to nudge or remove.'
+                          : "The AI didn't spot tree canopy over this yard. You can still drop trees with ✏️."}
+                      </Text>
+                      <TouchableOpacity style={styles.aiBtnGhost} onPress={scanForTrees}>
+                        <Text style={styles.aiBtnGhostText}>↺ Re-scan</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  {aiStage === 'error' && (
+                    <View style={styles.aiCard}>
+                      <Text style={styles.aiFine}>Couldn't run the AI here{aiErr ? ` (${aiErr})` : ''}.</Text>
+                      <TouchableOpacity style={styles.aiBtnGhost} onPress={scanForTrees}>
+                        <Text style={styles.aiBtnGhostText}>↺ Try again</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+              )}
               {!loadingBld && !houseCovered && (
                 <View style={styles.actionRow}>
                   <Text style={styles.hint}>Your house isn't outlined here, so it may read as full sun. Center the pin on it and add it.</Text>
@@ -646,6 +773,17 @@ const styles = StyleSheet.create({
   pillActive: { backgroundColor: '#7cb342' },
   pillText: { color: '#cfe3b4', fontWeight: '600' },
   pillTextActive: { color: '#12240f' },
+  aiBox: { marginTop: 10, gap: 6 },
+  aiBtn: { backgroundColor: '#6a4bd6', paddingVertical: 12, paddingHorizontal: 14, borderRadius: 12, alignItems: 'center' },
+  aiBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  aiFine: { color: '#c3b8e6', fontSize: 12, lineHeight: 17 },
+  aiCard: { backgroundColor: '#241a3d', borderColor: '#5a3fb0', borderWidth: 1, borderRadius: 14, padding: 14, gap: 8 },
+  aiTitle: { color: '#eaf5d9', fontWeight: '800', fontSize: 15 },
+  aiTrack: { height: 12, borderRadius: 999, backgroundColor: '#0f1a0c', borderColor: '#2f4a2c', borderWidth: 1, overflow: 'hidden' },
+  aiFill: { height: '100%', borderRadius: 999, backgroundColor: '#b452c9', minWidth: 8 },
+  aiMeta: { color: '#9fb47f', fontSize: 12, textAlign: 'right' },
+  aiBtnGhost: { backgroundColor: '#20301a', borderColor: '#2f4a2c', borderWidth: 1, borderRadius: 10, paddingVertical: 8, alignItems: 'center' },
+  aiBtnGhostText: { color: '#dcecc7', fontWeight: '600' },
   hint: { color: '#9fbb80', fontSize: 12, fontStyle: 'italic', flex: 1 },
   canvasWrap: { alignItems: 'center', marginBottom: 12 },
   mapBadge: { position: 'absolute', top: 10, left: 10, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(20,36,15,0.8)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
