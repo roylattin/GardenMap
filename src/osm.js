@@ -65,9 +65,9 @@ function treeFrom(lat, lng, tags = {}) {
   return { type: 'tree', lat, lng, radius, height, auto: true };
 }
 
-export async function fetchBuildings(lat, lng, radius = 150) {
+export async function fetchBuildings(lat, lng, radius = 90) {
   const q =
-    `[out:json][timeout:20];(` +
+    `[out:json][timeout:12];(` +
     `way["building"](around:${radius},${lat},${lng});` +
     `node["natural"="tree"](around:${radius},${lat},${lng});` +
     `way["natural"="tree_row"](around:${radius},${lat},${lng});` +
@@ -80,7 +80,7 @@ export async function fetchBuildings(lat, lng, radius = 150) {
   const attempt = (async () => {
     const tries = ENDPOINTS.map((u) => {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 9000);
+      const t = setTimeout(() => ctrl.abort(), 7000);
       return tryEndpoint(u, body, ctrl.signal).finally(() => clearTimeout(t));
     });
     try {
@@ -89,7 +89,7 @@ export async function fetchBuildings(lat, lng, radius = 150) {
       return { buildings: [], trees: [] };
     }
   })();
-  const hardCap = new Promise((res) => setTimeout(() => res(null), 11000));
+  const hardCap = new Promise((res) => setTimeout(() => res(null), 8000));
   const result = await Promise.race([attempt, hardCap]);
   return result && result.buildings ? result : { buildings: [], trees: [] };
 }

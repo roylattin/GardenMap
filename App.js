@@ -59,6 +59,31 @@ function metersBetween(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
+// Tiny safe key/value store — uses localStorage on web, no-ops on native.
+const LS = (() => {
+  try {
+    if (typeof localStorage !== 'undefined') return localStorage;
+  } catch {}
+  return null;
+})();
+function loadJSON(key, fallback) {
+  try {
+    const v = LS && LS.getItem(key);
+    return v ? JSON.parse(v) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function saveJSON(key, val) {
+  try {
+    if (LS) LS.setItem(key, JSON.stringify(val));
+  } catch {}
+}
+// Cache key for a ~110m tile so nearby pins reuse the same OSM result.
+function osmKey(lat, lng) {
+  return `gm_osm_${lat.toFixed(3)}_${lng.toFixed(3)}`;
+}
+
 // Seed the demo yard so shadows are visible on first load even if the public
 // OSM building service is slow/unavailable. Cleared once the user picks 📍.
 const DEMO_OBSTRUCTIONS = [
@@ -68,10 +93,13 @@ const DEMO_OBSTRUCTIONS = [
 ];
 
 export default function App() {
-  const [lat, setLat] = useState(37.4429);
-  const [lng, setLng] = useState(-122.1518);
-  const [zone, setZone] = useState(estimateZone(37.4429));
-  const [locLabel, setLocLabel] = useState('Demo yard — tap 📍 for yours');
+  const savedLoc = loadJSON('gm_loc', null);
+  const initLat = savedLoc ? savedLoc.lat : 37.4429;
+  const initLng = savedLoc ? savedLoc.lng : -122.1518;
+  const [lat, setLat] = useState(initLat);
+  const [lng, setLng] = useState(initLng);
+  const [zone, setZone] = useState(estimateZone(initLat));
+  const [locLabel, setLocLabel] = useState(savedLoc ? savedLoc.label || 'Saved yard' : 'Demo yard — tap 📍 for yours');
   const [season, setSeason] = useState('Summer');
   const [uiMode, setUiMode] = useState('zones'); // 'shadows' | 'zones' — zones is the primary view
   const [timeFrac, setTimeFrac] = useState(0.5); // 0 = sunrise, 1 = sunset
@@ -80,7 +108,7 @@ export default function App() {
   const [loadingBld, setLoadingBld] = useState(false);
   const [edit, setEdit] = useState(false);
   const [editKind, setEditKind] = useState('tree');
-  const [obstructions, setObstructions] = useState(DEMO_OBSTRUCTIONS);
+  const [obstructions, setObstructions] = useState(loadJSON('gm_obs', savedLoc ? [] : DEMO_OBSTRUCTIONS));
   const [autoTrees, setAutoTrees] = useState([]); // trees auto-detected from OpenStreetMap
   const [autoTreesOn, setAutoTreesOn] = useState(true);
 
@@ -118,8 +146,19 @@ export default function App() {
   const imageryUrl = imagery[imageryIdx] ? imagery[imageryIdx].url : null;
   const imageryDate = imagery[imageryIdx] ? imagery[imageryIdx].date : null;
 
+  // Persist the user's location + placed items so a hard refresh returns to
+  // their yard (not the demo) with their house/trees intact.
+  useEffect(() => {
+    saveJSON('gm_loc', { lat, lng, label: locLabel });
+  }, [lat, lng, locLabel]);
+  useEffect(() => {
+    saveJSON('gm_obs', obstructions);
+  }, [obstructions]);
+
   // Auto-load nearby building footprints whenever the pin moves a meaningful
   // distance (avoids hammering the OSM service while the user pans/zooms).
+  // Cached results show INSTANTLY (stale-while-revalidate) so there's no lag on
+  // revisits or hard refresh — the network fetch just quietly refreshes them.
   const lastFetch = useRef(null);
   useEffect(() => {
     const prev = lastFetch.current;
@@ -127,16 +166,35 @@ export default function App() {
     if (movedM < 25) return; // still analyzing essentially the same footprints
     lastFetch.current = { lat, lng };
     let cancelled = false;
-    setLoadingBld(true);
-    fetchBuildings(lat, lng, 160)
+
+    const key = osmKey(lat, lng);
+    const cached = loadJSON(key, null);
+    if (cached) {
+      setBuildings(cached.buildings || []);
+      setAutoTrees(cached.trees || []);
+      setLoadingBld(false); // instant — don't block on the network
+    } else {
+      setLoadingBld(true);
+    }
+
+    fetchBuildings(lat, lng, 90)
       .then((res) => {
-        if (!cancelled) {
-          setBuildings(res.buildings || []);
-          setAutoTrees(res.trees || []);
+        if (cancelled) return;
+        const b = res.buildings || [];
+        const t = res.trees || [];
+        if (b.length || t.length) {
+          setBuildings(b);
+          setAutoTrees(t);
+          saveJSON(key, { buildings: b, trees: t });
+        } else if (!cached) {
+          // Nothing here (or the fetch failed with no prior data) — reflect
+          // empty. If we DID have cache, keep it rather than clobber with empty.
+          setBuildings([]);
+          setAutoTrees([]);
         }
       })
       .catch(() => {
-        if (!cancelled) {
+        if (!cancelled && !cached) {
           setBuildings([]);
           setAutoTrees([]);
         }
