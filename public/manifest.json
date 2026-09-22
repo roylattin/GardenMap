@@ -1,0 +1,16 @@
+{
+  "name": "GardenMap",
+  "short_name": "GardenMap",
+  "description": "See your yard's sun, shade, and what plants will thrive — a ShadeMap for gardeners.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#20331f",
+  "theme_color": "#20331f",
+  "icons": [
+    {
+      "src": "./favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ]
+}

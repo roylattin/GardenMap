@@ -1,0 +1,37 @@
+GardenMap
+Copyright (c) 2026 roylattin
+
+This product is licensed under the MIT License (see LICENSE).
+
+It incorporates and/or depends on the following third-party works. Their
+licenses require the attributions below wherever GardenMap is distributed or
+displayed.
+
+-------------------------------------------------------------------------------
+Map data — OpenStreetMap
+-------------------------------------------------------------------------------
+Building footprints and heights are © OpenStreetMap contributors and are made
+available under the Open Database License (ODbL) v1.0.
+  https://www.openstreetmap.org/copyright
+  https://opendatacommons.org/licenses/odbl/
+The attribution "© OpenStreetMap contributors" is displayed on the map and in
+the app footer. Data is fetched at runtime via the public Overpass API.
+
+-------------------------------------------------------------------------------
+Satellite imagery — Esri World Imagery
+-------------------------------------------------------------------------------
+Basemap tiles are from Esri World Imagery. Source: Esri, Maxar, Earthstar
+Geographics, and the GIS User Community. Attribution is displayed on the map.
+Use is subject to Esri's terms of use:
+  https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9
+
+-------------------------------------------------------------------------------
+Software libraries
+-------------------------------------------------------------------------------
+Leaflet — © Vladimir Agafonkin, Cloudmade. BSD-2-Clause.
+  https://github.com/Leaflet/Leaflet
+react-leaflet — MIT. https://github.com/PaulLeCam/react-leaflet
+SunCalc — © Vladimir Agafonkin. BSD-2-Clause.
+  https://github.com/mourner/suncalc
+Expo & React Native — MIT. https://expo.dev / https://reactnative.dev
+qrcode — MIT. https://github.com/soldair/node-qrcode
