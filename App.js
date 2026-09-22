@@ -31,6 +31,7 @@ import {
   SUN_META,
 } from './src/solar';
 import { estimateZone, recommendPlants } from './src/plants';
+import { toMeters, pointInPoly } from './src/geo';
 
 // Public test-app URL (Azure Static Web Apps). On web we prefer the live origin.
 const APP_URL = 'https://purple-ocean-065e1490f.5.azurestaticapps.net';
@@ -80,6 +81,8 @@ export default function App() {
   const [edit, setEdit] = useState(false);
   const [editKind, setEditKind] = useState('tree');
   const [obstructions, setObstructions] = useState(DEMO_OBSTRUCTIONS);
+  const [autoTrees, setAutoTrees] = useState([]); // trees auto-detected from OpenStreetMap
+  const [autoTreesOn, setAutoTreesOn] = useState(true);
 
   const [selectedCell, setSelectedCell] = useState(null);
   const [imagery, setImagery] = useState([]); // [{ rel, date, url }] newest→oldest
@@ -126,11 +129,17 @@ export default function App() {
     let cancelled = false;
     setLoadingBld(true);
     fetchBuildings(lat, lng, 160)
-      .then((b) => {
-        if (!cancelled) setBuildings(b);
+      .then((res) => {
+        if (!cancelled) {
+          setBuildings(res.buildings || []);
+          setAutoTrees(res.trees || []);
+        }
       })
       .catch(() => {
-        if (!cancelled) setBuildings([]);
+        if (!cancelled) {
+          setBuildings([]);
+          setAutoTrees([]);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoadingBld(false);
@@ -139,6 +148,25 @@ export default function App() {
       cancelled = true;
     };
   }, [lat, lng]);
+
+  // Everything that casts shade: user-placed items + auto-detected OSM trees.
+  const effObstructions = useMemo(
+    () => (autoTreesOn ? [...obstructions, ...autoTrees] : obstructions),
+    [obstructions, autoTrees, autoTreesOn]
+  );
+
+  // Is the pin sitting on a modeled structure (OSM building or a placed
+  // structure)? Drives the "add my house" fallback when nothing covers it.
+  const houseCovered = useMemo(() => {
+    for (const b of buildings) {
+      const ring = b.ring.map(([la, ln]) => toMeters(lat, lng, la, ln));
+      if (pointInPoly({ e: 0, n: 0 }, ring)) return true;
+    }
+    for (const o of obstructions) {
+      if (o.type === 'structure' && metersBetween(lat, lng, o.lat, o.lng) < 10) return true;
+    }
+    return false;
+  }, [buildings, obstructions, lat, lng]);
 
   // Live sun position for Shadows mode.
   const shadowTime = useMemo(() => timeForFraction(season, lat, lng, timeFrac), [season, lat, lng, timeFrac]);
@@ -151,8 +179,8 @@ export default function App() {
   // All-day sun-hours grid for Plant zones mode (recomputes as data changes).
   const sunGrid = useMemo(() => {
     if (uiMode !== 'zones') return null;
-    return computeSunGrid({ lat, lng, season, buildings, obstructions, gridN: GRID_N, sizeM: SIZE_M, stepMinutes: 30 });
-  }, [uiMode, lat, lng, season, buildings, obstructions]);
+    return computeSunGrid({ lat, lng, season, buildings, obstructions: effObstructions, gridN: GRID_N, sizeM: SIZE_M, stepMinutes: 30 });
+  }, [uiMode, lat, lng, season, buildings, effObstructions]);
 
   async function doShare() {
     const url = shareUrl();
@@ -204,8 +232,7 @@ export default function App() {
   // When no footprints are available (e.g. OSM is rate-limited), let the user
   // drop an estimated house at the pin so shadows always have something to cast.
   function addHouseAtCenter() {
-    setObstructions((prev) => [...prev, { type: 'structure', lat, lng, height: 5, radius: 5 }]);
-    setEdit(true);
+    setObstructions((prev) => [...prev, { type: 'structure', lat, lng, height: 6, radius: 6 }]);
     setSelectedCell(null);
   }
 
@@ -343,7 +370,7 @@ export default function App() {
             imageryUrl={imageryUrl}
             imageryDate={imageryDate}
             buildings={buildings}
-            obstructions={obstructions}
+            obstructions={effObstructions}
             mode={uiMode}
             edit={edit}
             sunPos={sunPos}
@@ -383,9 +410,9 @@ export default function App() {
                 ? 'The sun is below the horizon at this time — drag toward midday.'
                 : 'Drag the slider to watch shadows sweep across your yard.'}
             </Text>
-            {!loadingBld && buildings.length + obstructions.length === 0 && (
+            {!loadingBld && !houseCovered && (
               <View style={styles.actionRow}>
-                <Text style={styles.hint}>No buildings loaded here yet — add your house to cast a shadow.</Text>
+                <Text style={styles.hint}>No house outlined here — add yours so it casts a shadow.</Text>
                 <TouchableOpacity style={styles.primaryBtn} onPress={addHouseAtCenter}>
                   <Text style={styles.primaryBtnText}>➕ Add my house</Text>
                 </TouchableOpacity>
@@ -428,7 +455,32 @@ export default function App() {
                 </View>
               ))}
               <Text style={styles.panelSub}>Tap any colored square to see what grows there.</Text>
-              <Text style={[styles.hint, { flex: undefined, marginTop: 8 }]}>🌳 See a tree in the imagery? Tap ✏️ Edit → Tree and drop it — its canopy adds dappled shade, so the ground below reads part-shade, not full sun.</Text>
+              <View style={styles.legendRow}>
+                <TouchableOpacity
+                  style={[styles.pill, autoTreesOn && styles.pillActive]}
+                  onPress={() => setAutoTreesOn((v) => !v)}
+                >
+                  <Text style={[styles.pillText, autoTreesOn && styles.pillTextActive]}>
+                    🌳 Auto-detect trees {autoTreesOn ? 'on' : 'off'}
+                  </Text>
+                </TouchableOpacity>
+                <Text style={[styles.legendText, { marginLeft: 8 }]}>
+                  {autoTrees.length > 0
+                    ? `${autoTrees.length} found from OpenStreetMap`
+                    : loadingBld
+                    ? 'checking the map…'
+                    : 'none mapped here — add with ✏️'}
+                </Text>
+              </View>
+              {!loadingBld && !houseCovered && (
+                <View style={styles.actionRow}>
+                  <Text style={styles.hint}>Your house isn't outlined here, so it may read as full sun. Center the pin on it and add it.</Text>
+                  <TouchableOpacity style={styles.primaryBtn} onPress={addHouseAtCenter}>
+                    <Text style={styles.primaryBtnText}>➕ Add my house</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              <Text style={[styles.hint, { flex: undefined, marginTop: 8 }]}>🌳 See a tree we missed? Tap ✏️ Edit → Tree and drop it — its canopy adds dappled shade, so the ground below reads part-shade, not full sun.</Text>
             </View>
           ))}
 
