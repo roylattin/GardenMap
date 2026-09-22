@@ -352,12 +352,11 @@ export default function App() {
     setAiErr(null);
     setAiStage(isSegmenterReady() ? 'analyzing' : 'setup');
     try {
-      const { trees, structures } = await detectObstructions(lat, lng, SIZE_M, (p) => {
+      const { trees } = await detectObstructions(lat, lng, SIZE_M, (p) => {
         setAiProg(p);
         if (p.status === 'analyzing' || p.status === 'ready') setAiStage('analyzing');
       });
       setAiTrees(trees);
-      setAiStructures(structures);
       setAiStage('done');
     } catch (e) {
       setAiErr(String((e && e.message) || e));
@@ -616,7 +615,7 @@ export default function App() {
                   {aiStage === 'idle' && (
                     <>
                       <TouchableOpacity style={styles.aiBtn} onPress={scanForTrees}>
-                        <Text style={styles.aiBtnText}>✨ AI: scan satellite for trees & buildings</Text>
+                        <Text style={styles.aiBtnText}>✨ AI: scan satellite for tree canopy</Text>
                       </TouchableOpacity>
                       <Text style={styles.aiFine}>
                         Spots your house and tree canopy right from the aerial image — even when OpenStreetMap
@@ -655,23 +654,14 @@ export default function App() {
                   {aiStage === 'done' && (
                     <View style={styles.aiCard}>
                       <Text style={styles.aiTitle}>
-                        {aiTrees.length + aiStructures.length > 0
-                          ? `✨ AI added ${[
-                              aiStructures.length
-                                ? `${aiStructures.length} building${aiStructures.length === 1 ? '' : 's'}`
-                                : null,
-                              aiTrees.length
-                                ? `${aiTrees.length} tree${aiTrees.length === 1 ? '' : 's'}`
-                                : null,
-                            ]
-                              .filter(Boolean)
-                              .join(' & ')}`
-                          : '✨ Nothing extra found'}
+                        {aiTrees.length > 0
+                          ? `✨ AI added ${aiTrees.length} tree${aiTrees.length === 1 ? '' : 's'}`
+                          : '✨ No canopy found'}
                       </Text>
                       <Text style={styles.aiFine}>
-                        {aiTrees.length + aiStructures.length > 0
-                          ? 'Shade from these is now in the plant zones — your house should no longer read full sun. Not right? Tap ✏️ to nudge or remove.'
-                          : "The AI didn't spot a house or canopy over this yard. You can still drop them with ✏️."}
+                        {aiTrees.length > 0
+                          ? 'Shade from this canopy is now in the plant zones. Buildings come from the map itself; tap ✏️ to nudge or remove anything.'
+                          : "The AI didn't spot tree canopy over this yard. You can still drop trees with ✏️."}
                       </Text>
                       <TouchableOpacity style={styles.aiBtnGhost} onPress={scanForTrees}>
                         <Text style={styles.aiBtnGhostText}>↺ Re-scan</Text>
