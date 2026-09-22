@@ -219,7 +219,7 @@ export default function App() {
       setLoadingBld(true);
     }
 
-    fetchBuildings(lat, lng, 90)
+    fetchBuildings(lat, lng)
       .then((res) => {
         if (cancelled) return;
         const b = res.buildings || [];

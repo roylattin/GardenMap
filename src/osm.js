@@ -65,9 +65,9 @@ function treeFrom(lat, lng, tags = {}) {
   return { type: 'tree', lat, lng, radius, height, auto: true };
 }
 
-export async function fetchBuildings(lat, lng, radius = 90) {
+export async function fetchBuildings(lat, lng, radius = 150) {
   const q =
-    `[out:json][timeout:12];(` +
+    `[out:json][timeout:25];(` +
     `way["building"](around:${radius},${lat},${lng});` +
     `node["natural"="tree"](around:${radius},${lat},${lng});` +
     `way["natural"="tree_row"](around:${radius},${lat},${lng});` +
@@ -77,10 +77,12 @@ export async function fetchBuildings(lat, lng, radius = 90) {
   // Race all mirrors; first success wins. Each attempt has its own timeout, and
   // a hard wall-clock cap GUARANTEES the promise resolves even if a mobile
   // browser ignores fetch abort — so the UI never gets stuck on "Loading…".
+  // The cache renders instantly, so this network fetch can afford to be patient
+  // (Overpass often needs 8-15s) and still update the map when it lands.
   const attempt = (async () => {
     const tries = ENDPOINTS.map((u) => {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 7000);
+      const t = setTimeout(() => ctrl.abort(), 18000);
       return tryEndpoint(u, body, ctrl.signal).finally(() => clearTimeout(t));
     });
     try {
@@ -89,7 +91,7 @@ export async function fetchBuildings(lat, lng, radius = 90) {
       return { buildings: [], trees: [] };
     }
   })();
-  const hardCap = new Promise((res) => setTimeout(() => res(null), 8000));
+  const hardCap = new Promise((res) => setTimeout(() => res(null), 20000));
   const result = await Promise.race([attempt, hardCap]);
   return result && result.buildings ? result : { buildings: [], trees: [] };
 }
