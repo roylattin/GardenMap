@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   SafeAreaView,
   ScrollView,
@@ -41,10 +41,22 @@ function shareUrl() {
   return APP_URL;
 }
 
-const GRID_N = 14;
-const SIZE_M = 44; // area analyzed ≈ 44m x 44m around the pin
+const GRID_N = 20;
+const SIZE_M = 64; // area analyzed ≈ 64m x 64m around the pin
 const SEASONS = ['Spring', 'Summer', 'Fall', 'Winter'];
 const CANVAS = Math.min(Dimensions.get('window').width - 32, 380);
+
+// Rough great-circle distance in meters (good enough for yard-scale guards).
+function metersBetween(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
 
 // Seed the demo yard so shadows are visible on first load even if the public
 // OSM building service is slow/unavailable. Cleared once the user picks 📍.
@@ -60,7 +72,7 @@ export default function App() {
   const [zone, setZone] = useState(estimateZone(37.4429));
   const [locLabel, setLocLabel] = useState('Demo yard — tap 📍 for yours');
   const [season, setSeason] = useState('Summer');
-  const [uiMode, setUiMode] = useState('shadows'); // 'shadows' | 'zones'
+  const [uiMode, setUiMode] = useState('zones'); // 'shadows' | 'zones' — zones is the primary view
   const [timeFrac, setTimeFrac] = useState(0.5); // 0 = sunrise, 1 = sunset
 
   const [buildings, setBuildings] = useState([]);
@@ -103,8 +115,14 @@ export default function App() {
   const imageryUrl = imagery[imageryIdx] ? imagery[imageryIdx].url : null;
   const imageryDate = imagery[imageryIdx] ? imagery[imageryIdx].date : null;
 
-  // Auto-load nearby building footprints whenever the pin moves.
+  // Auto-load nearby building footprints whenever the pin moves a meaningful
+  // distance (avoids hammering the OSM service while the user pans/zooms).
+  const lastFetch = useRef(null);
   useEffect(() => {
+    const prev = lastFetch.current;
+    const movedM = prev ? metersBetween(prev.lat, prev.lng, lat, lng) : Infinity;
+    if (movedM < 25) return; // still analyzing essentially the same footprints
+    lastFetch.current = { lat, lng };
     let cancelled = false;
     setLoadingBld(true);
     fetchBuildings(lat, lng, 160)
@@ -197,6 +215,18 @@ export default function App() {
     setZone(estimateZone(la));
     setLocLabel(`${la.toFixed(4)}, ${ln.toFixed(4)}`);
     setObstructions([]);
+    setSelectedCell(null);
+  }
+
+  // The user panned/zoomed the map — follow the new center so every result
+  // (shadows, sun grid, plant zones, hardiness zone) reflects what they're
+  // looking at now. Guard against no-op updates from programmatic recenters.
+  function onMapRecenter(la, ln) {
+    if (metersBetween(lat, lng, la, ln) < 1) return;
+    setLat(la);
+    setLng(ln);
+    setZone(estimateZone(la));
+    setLocLabel(`${la.toFixed(4)}, ${ln.toFixed(4)}`);
     setSelectedCell(null);
   }
 
@@ -323,6 +353,7 @@ export default function App() {
             selectedCell={selectedCell}
             onPlace={placeObstruction}
             onInspect={inspectCell}
+            onRecenter={onMapRecenter}
           />
           {loadingBld && (
             <View style={styles.mapBadge}>
@@ -397,6 +428,7 @@ export default function App() {
                 </View>
               ))}
               <Text style={styles.panelSub}>Tap any colored square to see what grows there.</Text>
+              <Text style={[styles.hint, { flex: undefined, marginTop: 8 }]}>🌳 See a tree in the imagery? Tap ✏️ Edit → Tree and drop it — its canopy adds dappled shade, so the ground below reads part-shade, not full sun.</Text>
             </View>
           ))}
 

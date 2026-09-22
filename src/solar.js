@@ -141,11 +141,12 @@ function footprintsMeters({ lat, lng, buildings = [], obstructions = [] }) {
   const fps = [];
   for (const b of buildings) {
     const ring = b.ring.map(([la, ln]) => toMeters(lat, lng, la, ln));
-    fps.push({ ring, height: b.height });
+    fps.push({ ring, height: b.height, transmit: 0 }); // opaque
   }
   for (const o of obstructions) {
     const c = toMeters(lat, lng, o.lat, o.lng);
     const r = o.radius || 1.5;
+    const isTree = o.type === 'tree';
     fps.push({
       ring: [
         { e: c.e - r, n: c.n - r },
@@ -154,6 +155,12 @@ function footprintsMeters({ lat, lng, buildings = [], obstructions = [] }) {
         { e: c.e - r, n: c.n + r },
       ],
       height: o.height,
+      // Trees cast dappled shade — canopy lets ~35% of direct sun through —
+      // while walls/structures block it entirely.
+      transmit: isTree ? 0.35 : 0,
+      type: isTree ? 'tree' : 'structure',
+      center: c,
+      radius: r,
     });
   }
   return fps;
@@ -162,6 +169,7 @@ function footprintsMeters({ lat, lng, buildings = [], obstructions = [] }) {
 /**
  * All-day direct-sun hours for a sizeM x sizeM grid centered on (lat,lng),
  * accounting for shadows cast by real building footprints + added obstructions.
+ * Trees pass a fraction of light (dappled shade); buildings block fully.
  * Returns a 2D array [row][col] (row 0 = north).
  */
 export function computeSunGrid({
@@ -181,11 +189,32 @@ export function computeSunGrid({
 
   const fps = footprintsMeters({ lat, lng, buildings, obstructions });
   const cellM = sizeM / gridN;
+  // Trees as overhead canopy disks. A spot directly under a leafy canopy is
+  // dappled all day (leaves are overhead regardless of sun angle), separate
+  // from the cast shadow that sweeps the ground beside the tree. rEff is at
+  // least ~3/4 of a cell so the nearest grid cell is reliably caught.
+  const trees = [];
+  fps.forEach((f, i) => {
+    if (f.type === 'tree') {
+      trees.push({ i, e: f.center.e, n: f.center.n, rEff: Math.max(f.radius, cellM * 0.75), transmit: f.transmit });
+    }
+  });
   // grid centered on (0,0) in meters; row 0 = north (+n)
   const centers = [];
   for (let r = 0; r < gridN; r++) {
     for (let c = 0; c < gridN; c++) {
-      centers.push({ r, c, e: -sizeM / 2 + (c + 0.5) * cellM, n: sizeM / 2 - (r + 0.5) * cellM });
+      const e = -sizeM / 2 + (c + 0.5) * cellM;
+      const n = sizeM / 2 - (r + 0.5) * cellM;
+      let canopy = 1;
+      const under = new Set();
+      for (const tr of trees) {
+        const de = e - tr.e, dn = n - tr.n;
+        if (de * de + dn * dn <= tr.rEff * tr.rEff) {
+          canopy *= tr.transmit; // overhead leaves dim this cell all day
+          under.add(tr.i);
+        }
+      }
+      centers.push({ r, c, e, n, canopy, under });
     }
   }
 
@@ -200,16 +229,19 @@ export function computeSunGrid({
       shadowHull(f.ring, off ? { e: off.e * f.height, n: off.n * f.height } : null)
     );
     for (const ctr of centers) {
-      let shaded = false;
+      let light = 1; // fraction of direct sun reaching this cell right now
       for (let i = 0; i < hulls.length; i++) {
+        if (ctr.under.has(i)) continue; // this tree handled by all-day canopy pass
         const hull = hulls[i];
         if (hull && pointInPoly(ctr, hull)) {
-          shaded = true;
-          break;
+          light *= fps[i].transmit; // 0 for walls, ~0.35 for tree canopy
+          if (light <= 0.001) break;
         }
       }
-      if (!shaded) grid[ctr.r][ctr.c] += stepHours;
+      if (light > 0) grid[ctr.r][ctr.c] += stepHours * light;
     }
   }
+  // Apply the all-day overhead canopy dimming last.
+  for (const ctr of centers) grid[ctr.r][ctr.c] *= ctr.canopy;
   return grid;
 }
