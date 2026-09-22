@@ -181,6 +181,14 @@ export default function App() {
     setSelectedCell(null);
   }
 
+  // When no footprints are available (e.g. OSM is rate-limited), let the user
+  // drop an estimated house at the pin so shadows always have something to cast.
+  function addHouseAtCenter() {
+    setObstructions((prev) => [...prev, { type: 'structure', lat, lng, height: 5, radius: 5 }]);
+    setEdit(true);
+    setSelectedCell(null);
+  }
+
   function inspectCell(r, c) {
     setSelectedCell({ r, c });
   }
@@ -326,10 +334,18 @@ export default function App() {
               <Text style={styles.tick}>Sunset</Text>
             </View>
             <Text style={styles.panelSub}>
-              {!loadingBld && buildings.length === 0
-                ? 'Auto building data is busy right now — drop your own house & trees with ✏️ Edit to see their shadows.'
-                : 'Drag to watch shadows sweep across your yard.'}
+              {sunPos.altitude <= 0
+                ? 'The sun is below the horizon at this time — drag toward midday.'
+                : 'Drag the slider to watch shadows sweep across your yard.'}
             </Text>
+            {!loadingBld && buildings.length + obstructions.length === 0 && (
+              <View style={styles.actionRow}>
+                <Text style={styles.hint}>No buildings loaded here yet — add your house to cast a shadow.</Text>
+                <TouchableOpacity style={styles.primaryBtn} onPress={addHouseAtCenter}>
+                  <Text style={styles.primaryBtnText}>➕ Add my house</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         )}
 
@@ -474,6 +490,8 @@ const styles = StyleSheet.create({
   actionRow: { flexDirection: 'row', gap: 8, marginBottom: 16, alignItems: 'center' },
   secondaryBtn: { backgroundColor: '#2f4a2c', padding: 10, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   secondaryBtnText: { color: '#dcecc7', fontWeight: '600' },
+  primaryBtn: { backgroundColor: '#7cb342', paddingVertical: 10, paddingHorizontal: 14, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  primaryBtnText: { color: '#12240f', fontWeight: '700' },
   editToggle: { backgroundColor: '#2f4a2c', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 10 },
   editToggleOn: { backgroundColor: '#f4a825' },
   editToggleText: { color: '#dcecc7', fontWeight: '700' },
