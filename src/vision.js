@@ -32,6 +32,10 @@ export function isVisionSupported() {
 const SKY = new Set(['sky']);
 const CANOPY = new Set(['tree', 'plant', 'palm']);
 const STRUCTURE = new Set(['building', 'house', 'wall', 'fence', 'hovel', 'skyscraper', 'awning']);
+// From an aerial tile, count only solid built structures as shadow-casters
+// (a fence casts almost nothing, so it's left out of the satellite detector).
+const TREE = new Set(['tree', 'palm']);
+const BUILDING = new Set(['building', 'house', 'hovel', 'skyscraper']);
 const GROUND = new Set([
   'earth', 'grass', 'field', 'sand', 'road', 'path', 'sidewalk', 'floor',
   'dirt track', 'runway', 'land', 'hill', 'rug',
@@ -164,6 +168,29 @@ function coarseGrid(mask, G) {
   return on;
 }
 
+// Union several class masks (e.g. building + house) into one coarse boolean grid.
+function gridFromLabels(byLabel, set, w, h, G, minCover = 0.4) {
+  const masks = [];
+  for (const label in byLabel) if (set.has(label)) masks.push(byLabel[label].mask);
+  if (!masks.length) return null;
+  const grid = new Array(G * G).fill(0);
+  const counts = new Array(G * G).fill(0);
+  for (let y = 0; y < h; y++) {
+    const gy = Math.min(G - 1, (y * G / h) | 0);
+    for (let x = 0; x < w; x++) {
+      const gx = Math.min(G - 1, (x * G / w) | 0);
+      const gi = gy * G + gx;
+      counts[gi]++;
+      let hit = false;
+      for (const m of masks) { if (m.data[y * m.width + x] > 127) { hit = true; break; } }
+      if (hit) grid[gi]++;
+    }
+  }
+  const on = new Array(G * G).fill(false);
+  for (let i = 0; i < grid.length; i++) on[i] = counts[i] > 0 && grid[i] / counts[i] >= minCover;
+  return on;
+}
+
 // Flood-fill the boolean grid into connected blobs.
 function blobs(on, G) {
   const seen = new Array(G * G).fill(false);
@@ -189,28 +216,43 @@ function blobs(on, G) {
   return out;
 }
 
+// Detect shadow-casters in the yard's satellite tile. Segments the aerial image
+// once and turns tree-canopy and building blobs into map obstructions:
+//   { type:'tree'|'structure', lat, lng, radius, height, ai:true }
+// Returns { trees, structures } so callers can label/report them separately.
+export async function detectObstructions(lat, lng, sizeM = 64, onProgress) {
+  const { url, west, east, south, north } = yardTileUrl(lat, lng, sizeM);
+  const { byLabel, w, h } = await segment(url, onProgress);
+  const G = 40;
+  const mPerCell = sizeM / G;
+  const cellArea = mPerCell * mPerCell;
+
+  const blobsToItems = (set, type, height, rMin, rMax) => {
+    const on = gridFromLabels(byLabel, set, w, h, G);
+    if (!on) return [];
+    const items = [];
+    for (const cells of blobs(on, G)) {
+      if (cells.length < 2) continue; // ignore speckle
+      let sx = 0, sy = 0;
+      for (const c of cells) { sx += c % G; sy += (c / G) | 0; }
+      const cx = sx / cells.length, cy = sy / cells.length;
+      const areaM2 = cells.length * cellArea;
+      const radius = Math.max(rMin, Math.min(rMax, Math.sqrt(areaM2 / Math.PI)));
+      const ilng = west + ((cx + 0.5) / G) * (east - west);
+      const ilat = north - ((cy + 0.5) / G) * (north - south);
+      items.push({ type, lat: ilat, lng: ilng, radius, height, ai: true });
+    }
+    return items;
+  };
+
+  const trees = blobsToItems(TREE, 'tree', 7, 1.8, 10);
+  const structures = blobsToItems(BUILDING, 'structure', 6, 2.5, 16);
+  return { trees, structures };
+}
+
 // Detect tree canopy in the yard's satellite tile and return tree obstructions
 // { type:'tree', lat, lng, radius, height, ai:true }.
 export async function detectCanopyTrees(lat, lng, sizeM = 64, onProgress) {
-  const { url, west, east, south, north } = yardTileUrl(lat, lng, sizeM);
-  const { byLabel } = await segment(url, onProgress);
-  const tree = byLabel['tree'];
-  if (!tree) return [];
-  const G = 40;
-  const on = coarseGrid(tree.mask, G);
-  const mPerCell = sizeM / G;
-  const cellArea = mPerCell * mPerCell;
-  const trees = [];
-  for (const cells of blobs(on, G)) {
-    if (cells.length < 2) continue; // ignore speckle
-    let sx = 0, sy = 0;
-    for (const c of cells) { sx += c % G; sy += (c / G) | 0; }
-    const cx = sx / cells.length, cy = sy / cells.length;
-    const areaM2 = cells.length * cellArea;
-    const radius = Math.max(1.8, Math.min(10, Math.sqrt(areaM2 / Math.PI)));
-    const tlng = west + ((cx + 0.5) / G) * (east - west);
-    const tlat = north - ((cy + 0.5) / G) * (north - south);
-    trees.push({ type: 'tree', lat: tlat, lng: tlng, radius, height: 7, ai: true });
-  }
+  const { trees } = await detectObstructions(lat, lng, sizeM, onProgress);
   return trees;
 }

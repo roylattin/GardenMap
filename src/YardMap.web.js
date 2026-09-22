@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { View } from 'react-native';
-import { MapContainer, TileLayer, Polygon, Rectangle, CircleMarker, Circle, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Polygon, Rectangle, CircleMarker, Circle, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 
 import { toMeters, toLatLng, shadowOffset, shadowHull } from './geo';
 import { classifySun, SUN_META } from './solar';
@@ -72,6 +72,7 @@ export default function YardMap({
   sizeM = 40,
   selectedCell,
   onPlace,
+  onRemove,
   onInspect,
   onRecenter,
 }) {
@@ -201,21 +202,32 @@ export default function YardMap({
           />
         ))}
 
-        {/* Added obstructions */}
-        {obstructions.map((o, i) => (
-          o.type === 'tree' ? (
+        {/* Added obstructions. In edit mode, tapping one removes it. */}
+        {obstructions.map((o, i) => {
+          const rm =
+            edit && onRemove
+              ? { eventHandlers: { click: () => onRemove(o) }, bubblingMouseEvents: false }
+              : {};
+          const hint = edit && onRemove ? (
+            <Tooltip direction="top" offset={[0, -6]}>Tap to remove</Tooltip>
+          ) : null;
+          return o.type === 'tree' ? (
             <React.Fragment key={`o-${i}`}>
               {/* Real-meter canopy: the ground under it is dappled all day */}
               <Circle
                 center={[o.lat, o.lng]}
                 radius={Math.max(o.radius || 1.5, 2)}
                 pathOptions={{ color: '#1b4d20', fillColor: '#2e7d32', fillOpacity: 0.28, weight: 1.5 }}
+                {...rm}
               />
               <CircleMarker
                 center={[o.lat, o.lng]}
                 radius={4}
                 pathOptions={{ color: '#1b4d20', fillColor: '#2e7d32', fillOpacity: 0.95, weight: 2 }}
-              />
+                {...rm}
+              >
+                {hint}
+              </CircleMarker>
             </React.Fragment>
           ) : (
             <CircleMarker
@@ -228,9 +240,12 @@ export default function YardMap({
                 fillOpacity: 0.9,
                 weight: 2,
               }}
-            />
-          )
-        ))}
+              {...rm}
+            >
+              {hint}
+            </CircleMarker>
+          );
+        })}
       </MapContainer>
 
       {/* Fixed center pin — marks the exact spot being analyzed. Follows the map

@@ -22,7 +22,7 @@ import YardMap from './src/YardMap';
 import TimeSlider from './src/TimeSlider';
 import PhotoAnalyzer from './src/PhotoAnalyzer';
 import { fetchBuildings } from './src/osm';
-import { detectCanopyTrees, isSegmenterReady, isVisionSupported } from './src/vision';
+import { detectObstructions, isSegmenterReady, isVisionSupported } from './src/vision';
 import { fetchWaybackReleases } from './src/wayback';
 import {
   computeSunGrid,
@@ -113,6 +113,7 @@ export default function App() {
   const [autoTrees, setAutoTrees] = useState([]); // trees auto-detected from OpenStreetMap
   const [autoTreesOn, setAutoTreesOn] = useState(true);
   const [aiTrees, setAiTrees] = useState([]); // trees detected by on-device AI from the satellite tile
+  const [aiStructures, setAiStructures] = useState([]); // buildings detected by on-device AI from the satellite tile
   const [aiStage, setAiStage] = useState('idle'); // idle | setup | analyzing | done | error
   const [aiProg, setAiProg] = useState({ pct: 0, loaded: 0, total: 0 });
   const [aiErr, setAiErr] = useState(null);
@@ -205,6 +206,7 @@ export default function App() {
     lastFetch.current = { lat, lng };
     let cancelled = false;
     setAiTrees([]); // AI canopy is tied to the previous tile — clear on move
+    setAiStructures([]);
     setAiStage('idle');
 
     const key = osmKey(lat, lng);
@@ -250,8 +252,8 @@ export default function App() {
   // Everything that casts shade: user-placed items + auto-detected OSM trees +
   // AI-detected canopy from the satellite tile.
   const effObstructions = useMemo(
-    () => [...obstructions, ...(autoTreesOn ? autoTrees : []), ...aiTrees],
-    [obstructions, autoTrees, autoTreesOn, aiTrees]
+    () => [...obstructions, ...(autoTreesOn ? autoTrees : []), ...aiTrees, ...aiStructures],
+    [obstructions, autoTrees, autoTreesOn, aiTrees, aiStructures]
   );
 
   // Is the pin sitting on a modeled structure (OSM building or a placed
@@ -261,11 +263,11 @@ export default function App() {
       const ring = b.ring.map(([la, ln]) => toMeters(lat, lng, la, ln));
       if (pointInPoly({ e: 0, n: 0 }, ring)) return true;
     }
-    for (const o of obstructions) {
+    for (const o of [...obstructions, ...aiStructures]) {
       if (o.type === 'structure' && metersBetween(lat, lng, o.lat, o.lng) < 10) return true;
     }
     return false;
-  }, [buildings, obstructions, lat, lng]);
+  }, [buildings, obstructions, aiStructures, lat, lng]);
 
   // Live sun position for Shadows mode.
   const shadowTime = useMemo(() => timeForFraction(season, lat, lng, timeFrac), [season, lat, lng, timeFrac]);
@@ -328,6 +330,15 @@ export default function App() {
     setSelectedCell(null);
   }
 
+  // Tap an item on the map (in edit mode) to remove it — works for items you
+  // placed and for anything the AI added.
+  function removeObstruction(target) {
+    setObstructions((prev) => prev.filter((o) => o !== target));
+    setAiTrees((prev) => prev.filter((o) => o !== target));
+    setAiStructures((prev) => prev.filter((o) => o !== target));
+    setSelectedCell(null);
+  }
+
   // When no footprints are available (e.g. OSM is rate-limited), let the user
   // drop an estimated house at the pin so shadows always have something to cast.
   function addHouseAtCenter() {
@@ -341,11 +352,12 @@ export default function App() {
     setAiErr(null);
     setAiStage(isSegmenterReady() ? 'analyzing' : 'setup');
     try {
-      const trees = await detectCanopyTrees(lat, lng, SIZE_M, (p) => {
+      const { trees, structures } = await detectObstructions(lat, lng, SIZE_M, (p) => {
         setAiProg(p);
         if (p.status === 'analyzing' || p.status === 'ready') setAiStage('analyzing');
       });
       setAiTrees(trees);
+      setAiStructures(structures);
       setAiStage('done');
     } catch (e) {
       setAiErr(String((e && e.message) || e));
@@ -419,24 +431,32 @@ export default function App() {
           </View>
         </View>
 
-        {/* Mode segmented control */}
+        {/* Mode segmented control — tap the active one again to hide overlays. */}
         <View style={styles.segment}>
           <TouchableOpacity
             style={[styles.segBtn, uiMode === 'shadows' && styles.segActive]}
-            onPress={() => setUiMode('shadows')}
+            onPress={() => {
+              setUiMode((m) => (m === 'shadows' ? 'none' : 'shadows'));
+              setSelectedCell(null);
+            }}
           >
             <Text style={[styles.segText, uiMode === 'shadows' && styles.segTextActive]}>☀️ Shadows</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.segBtn, uiMode === 'zones' && styles.segActive]}
             onPress={() => {
-              setUiMode('zones');
+              setUiMode((m) => (m === 'zones' ? 'none' : 'zones'));
               setSelectedCell(null);
             }}
           >
             <Text style={[styles.segText, uiMode === 'zones' && styles.segTextActive]}>🌱 Plant zones</Text>
           </TouchableOpacity>
         </View>
+        {uiMode === 'none' && (
+          <Text style={[styles.hint, { marginTop: 6 }]}>
+            🛰 Clean satellite view — overlays off. Tap ☀️ Shadows or 🌱 Plant zones to bring them back.
+          </Text>
+        )}
 
         {/* Season selector */}
         <View style={styles.pillRow}>
@@ -496,6 +516,7 @@ export default function App() {
             sizeM={SIZE_M}
             selectedCell={selectedCell}
             onPlace={placeObstruction}
+            onRemove={removeObstruction}
             onInspect={inspectCell}
             onRecenter={onMapRecenter}
           />
@@ -527,7 +548,7 @@ export default function App() {
                 ? 'The sun is below the horizon at this time — drag toward midday.'
                 : 'Drag the slider to watch shadows sweep across your yard.'}
             </Text>
-            {!loadingBld && !houseCovered && (
+            {!loadingBld && !houseCovered && aiStructures.length === 0 && (
               <View style={styles.actionRow}>
                 <Text style={styles.hint}>No house outlined here — add yours so it casts a shadow.</Text>
                 <TouchableOpacity style={styles.primaryBtn} onPress={addHouseAtCenter}>
@@ -595,11 +616,12 @@ export default function App() {
                   {aiStage === 'idle' && (
                     <>
                       <TouchableOpacity style={styles.aiBtn} onPress={scanForTrees}>
-                        <Text style={styles.aiBtnText}>✨ AI: scan satellite for trees</Text>
+                        <Text style={styles.aiBtnText}>✨ AI: scan satellite for trees & buildings</Text>
                       </TouchableOpacity>
                       <Text style={styles.aiFine}>
-                        Finds tree canopy OpenStreetMap misses, right from the aerial image — runs on your device.
-                        First run downloads a small model (~15 MB) once, then it's instant.
+                        Spots your house and tree canopy right from the aerial image — even when OpenStreetMap
+                        has no outline — so they cast real shade. Runs on your device; first run downloads a
+                        small model (~15 MB) once, then it's instant.
                       </Text>
                     </>
                   )}
@@ -611,7 +633,7 @@ export default function App() {
                       <Text style={styles.aiFine}>
                         {aiStage === 'setup'
                           ? "One-time download — cached on this device afterwards, so it's instant next time. Nothing is uploaded."
-                          : 'Finding tree canopy in the aerial image on your device.'}
+                          : 'Finding your house and tree canopy in the aerial image on your device.'}
                       </Text>
                       <View style={styles.aiTrack}>
                         <View
@@ -633,14 +655,23 @@ export default function App() {
                   {aiStage === 'done' && (
                     <View style={styles.aiCard}>
                       <Text style={styles.aiTitle}>
-                        {aiTrees.length > 0
-                          ? `✨ AI added ${aiTrees.length} tree${aiTrees.length === 1 ? '' : 's'}`
-                          : '✨ No extra canopy found'}
+                        {aiTrees.length + aiStructures.length > 0
+                          ? `✨ AI added ${[
+                              aiStructures.length
+                                ? `${aiStructures.length} building${aiStructures.length === 1 ? '' : 's'}`
+                                : null,
+                              aiTrees.length
+                                ? `${aiTrees.length} tree${aiTrees.length === 1 ? '' : 's'}`
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' & ')}`
+                          : '✨ Nothing extra found'}
                       </Text>
                       <Text style={styles.aiFine}>
-                        {aiTrees.length > 0
-                          ? 'Dappled shade from these is now in the plant zones. Not right? Tap ✏️ to nudge or remove.'
-                          : "The AI didn't spot tree canopy over this yard. You can still drop trees with ✏️."}
+                        {aiTrees.length + aiStructures.length > 0
+                          ? 'Shade from these is now in the plant zones — your house should no longer read full sun. Not right? Tap ✏️ to nudge or remove.'
+                          : "The AI didn't spot a house or canopy over this yard. You can still drop them with ✏️."}
                       </Text>
                       <TouchableOpacity style={styles.aiBtnGhost} onPress={scanForTrees}>
                         <Text style={styles.aiBtnGhostText}>↺ Re-scan</Text>
@@ -657,7 +688,7 @@ export default function App() {
                   )}
                 </View>
               )}
-              {!loadingBld && !houseCovered && (
+              {!loadingBld && !houseCovered && aiStructures.length === 0 && (
                 <View style={styles.actionRow}>
                   <Text style={styles.hint}>Your house isn't outlined here, so it may read as full sun. Center the pin on it and add it.</Text>
                   <TouchableOpacity style={styles.primaryBtn} onPress={addHouseAtCenter}>
@@ -698,7 +729,7 @@ export default function App() {
         </View>
         {edit && (
           <View style={styles.actionRow}>
-            <Text style={styles.hint}>Tap the map to drop a {editKind}. Trees ≈ 6 m, structures ≈ 4 m.</Text>
+            <Text style={styles.hint}>Tap the map to drop a {editKind}; tap any tree or house to remove it. Trees ≈ 6 m, structures ≈ 4 m.</Text>
             <TouchableOpacity style={styles.secondaryBtn} onPress={() => setObstructions((p) => p.slice(0, -1))}>
               <Text style={styles.secondaryBtnText}>↩︎ Undo</Text>
             </TouchableOpacity>
