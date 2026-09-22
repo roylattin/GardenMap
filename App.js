@@ -43,7 +43,7 @@ function shareUrl() {
   return APP_URL;
 }
 
-const GRID_N = 20;
+const GRID_N = 32;
 const SIZE_M = 64; // area analyzed ≈ 64m x 64m around the pin
 const SEASONS = ['Spring', 'Summer', 'Fall', 'Winter'];
 const CANVAS = Math.min(Dimensions.get('window').width - 32, 380);
