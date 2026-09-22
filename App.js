@@ -43,7 +43,7 @@ function shareUrl() {
   return APP_URL;
 }
 
-const GRID_N = 32;
+const GRID_N = 40;
 const SIZE_M = 64; // area analyzed ≈ 64m x 64m around the pin
 const SEASONS = ['Spring', 'Summer', 'Fall', 'Winter'];
 const CANVAS = Math.min(Dimensions.get('window').width - 32, 380);
@@ -211,12 +211,21 @@ export default function App() {
 
     const key = osmKey(lat, lng);
     const cached = loadJSON(key, null);
+    // Recently-fetched footprints are trusted as-is: show them and skip the
+    // network entirely. This is what stops buildings from flashing empty on a
+    // refresh while the ~13s Overpass call is still in flight.
+    const fresh = cached && cached.ts && Date.now() - cached.ts < 14 * 864e5;
     if (cached) {
       setBuildings(cached.buildings || []);
       setAutoTrees(cached.trees || []);
       setLoadingBld(false); // instant — don't block on the network
     } else {
       setLoadingBld(true);
+    }
+    if (fresh) {
+      return () => {
+        cancelled = true;
+      };
     }
 
     fetchBuildings(lat, lng)
@@ -227,7 +236,7 @@ export default function App() {
         if (b.length || t.length) {
           setBuildings(b);
           setAutoTrees(t);
-          saveJSON(key, { buildings: b, trees: t });
+          saveJSON(key, { buildings: b, trees: t, ts: Date.now() });
         } else if (!cached) {
           // Nothing here (or the fetch failed with no prior data) — reflect
           // empty. If we DID have cache, keep it rather than clobber with empty.
